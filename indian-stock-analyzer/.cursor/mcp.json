@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "indian-stock-analyzer": {
+      "command": "python",
+      "args": [
+        "mcp_server.py"
+      ],
+      "cwd": "./backend"
+    },
+    "zapier": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@zapier/mcp-server"
+      ],
+      "env": {
+            "url": "https://mcp.zapier.com/api/v1/connect"
+      }
+    }
+  }
+}

@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+yfinance
+pandas
+pandas-ta
+feedparser
+vaderSentiment
+apscheduler
+requests
+beautifulsoup4
+python-dotenv
+slowapi
+websockets
+mcp
+firebase-admin
