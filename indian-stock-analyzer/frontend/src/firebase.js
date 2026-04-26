@@ -39,7 +39,7 @@ export async function requestNotificationPermission() {
       return null;
     }
 
-    await fetch("http://localhost:8000/api/fcm/register", {
+    await fetch("/api/fcm/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),

@@ -7,12 +7,18 @@ export default function CandlestickChart({ candles }) {
   useEffect(() => {
     if (!ref.current) return;
     const chart = createChart(ref.current, {
-      layout: { background: { color: "#0f172a" }, textColor: "#94a3b8" },
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: "#94a3b8" },
       width: ref.current.clientWidth,
-      height: 360,
-      grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
+      height: 400,
+      grid: { vertLines: { color: "rgba(30, 41, 59, 0.5)" }, horzLines: { color: "rgba(30, 41, 59, 0.5)" } },
     });
-    const series = chart.addCandlestickSeries();
+    const series = chart.addCandlestickSeries({
+      upColor: '#34d399',
+      downColor: '#fb7185',
+      borderVisible: false,
+      wickUpColor: '#34d399',
+      wickDownColor: '#fb7185',
+    });
     series.setData(
       (candles || []).map((c) => ({
         time: c.time.slice(0, 10),
@@ -25,5 +31,5 @@ export default function CandlestickChart({ candles }) {
     return () => chart.remove();
   }, [candles]);
 
-  return <div className="w-full rounded-xl border border-slate-800" ref={ref} />;
+  return <div className="w-full h-full min-h-[400px]" ref={ref} />;
 }

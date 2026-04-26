@@ -1,9 +1,25 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .glass {
+    @apply bg-slate-900/60 backdrop-blur-xl border border-slate-800/50 shadow-2xl;
+  }
+  .glass-card {
+    @apply bg-gradient-to-br from-slate-800/40 to-slate-900/80 backdrop-blur-lg border border-slate-700/50 shadow-lg hover:shadow-indigo-500/10 transition-all duration-300;
+  }
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400;
+  }
+}
+
 body {
-  font-family: Inter, system-ui, sans-serif;
-  background: #020617;
-  color: #e2e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  background: radial-gradient(circle at top left, #0f172a, #020617);
+  background-attachment: fixed;
+  color: #f8fafc;
+  overflow-x: hidden;
 }

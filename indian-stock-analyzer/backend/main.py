@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket
@@ -36,7 +37,14 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,25 +65,45 @@ def build_stock_payload(symbol: str, include_news: bool = False) -> dict[str, An
         articles = fetch_news_for_topic(f"{symbol} NSE India stock", limit=5)
         sentiment = score_articles(articles)
     else:
-        sentiment = {"sentiment": "Neutral", "score": 0.0, "articles": []}
+        sentiment = {"sentiment": "Neutral", "score": 0.0, "article_count": 0, "articles": []}
     signal = generate_signal(indicators, sentiment)
     return {
-        "symbol": symbol,
-        "price": indicators.get("price"),
-        "indicators": indicators,
-        "sentiment": sentiment,
-        **signal,
+        "symbol":           symbol,
+        "price":            indicators.get("price"),
+        "indicators":       indicators,
+        "sentiment":        sentiment,
+        # Core signal fields
+        "signal":           signal.get("signal", "HOLD"),
+        "confidence":       signal.get("confidence", 0),
+        "reasons":          signal.get("reasons", []),
+        # Extended structured fields
+        "confidence_label": signal.get("confidence_label", "LOW"),
+        "confidence_score": signal.get("confidence_score", 0.0),
+        "sentiment_tier":   signal.get("sentiment_tier", "SENTIMENT_NEUTRAL"),
+        "key_drivers":      signal.get("key_drivers", []),
+        "risk_flags":       signal.get("risk_flags", []),
+        "data_status":      signal.get("data_status", "OK"),
+        "disclaimer":       signal.get("disclaimer", ""),
+        "signal_timestamp": signal.get("signal_timestamp", ""),
     }
 
 
 def refresh_all() -> None:
-    for symbol in fetcher.get_nifty50_symbols():
+    symbols = list(set(fetcher.get_nifty50_symbols() + fetcher.get_banknifty_symbols()))
+    
+    def process_symbol(symbol: str):
         stock = build_stock_payload(symbol)
-        prev = last_signals.get(symbol)
-        now = stock["signal"]
-        if prev != now and now in ("STRONG BUY", "STRONG SELL"):
-            send_alert(symbol, now, stock.get("price") or 0.0, stock["confidence"], stock["reasons"])
-        last_signals[symbol] = now
+        now_signal = stock["signal"]
+        return symbol, stock, now_signal
+        
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(process_symbol, symbols)
+        for symbol, stock, now_signal in results:
+            prev = last_signals.get(symbol)
+            # Trigger on state change to any BUY or SELL (including STRONG variants)
+            if prev != now_signal and any(s in now_signal for s in ["BUY", "SELL"]) and "HOLD" not in now_signal:
+                send_alert(symbol, now_signal, stock.get("price") or 0.0, stock["confidence"], stock["reasons"])
+            last_signals[symbol] = now_signal
 
 
 class FCMTokenRequest(BaseModel):
@@ -115,9 +143,15 @@ async def run_bot_command(request: Request, req: CommandRequest) -> dict[str, st
     return {"response": response}
 
 
+@app.get("/api/health")
+async def health_check() -> dict[str, str]:
+    """Simple liveness probe — frontend can ping this to verify backend is up."""
+    return {"status": "ok", "server": "Indian Stock Analyzer"}
+
+
 @app.get("/api/indices")
 @limiter.limit("30/minute")
-async def get_indices(request: Request) -> dict[str, Any]:
+def get_indices(request: Request) -> dict[str, Any]:
     indices = fetcher.get_index_live()
     return {
         "market_status": "OPEN" if is_market_open() else "CLOSED",
@@ -128,13 +162,16 @@ async def get_indices(request: Request) -> dict[str, Any]:
 
 @app.get("/api/stocks")
 @limiter.limit("30/minute")
-async def get_stocks(request: Request) -> list[dict[str, Any]]:
-    return [build_stock_payload(s, include_news=False) for s in fetcher.get_nifty50_symbols()]
+def get_stocks(request: Request) -> list[dict[str, Any]]:
+    symbols = fetcher.get_nifty50_symbols()
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(lambda s: build_stock_payload(s, include_news=False), symbols))
+    return results
 
 
 @app.get("/api/stock/{symbol}")
 @limiter.limit("60/minute")
-async def get_stock(request: Request, symbol: str) -> dict[str, Any]:
+def get_stock(request: Request, symbol: str) -> dict[str, Any]:
     symbol = symbol.upper()
     if symbol not in fetcher.get_nifty50_symbols() and symbol not in fetcher.get_banknifty_symbols():
         return {"error": "Symbol not tracked"}
@@ -148,21 +185,31 @@ async def get_stock(request: Request, symbol: str) -> dict[str, Any]:
 
 @app.get("/api/news")
 @limiter.limit("30/minute")
-async def get_news(request: Request) -> dict[str, Any]:
+def get_news(request: Request) -> dict[str, Any]:
     market_news = fetch_market_news()
     out = {
         "NIFTY50": score_articles(market_news["NIFTY50"]),
         "BANKNIFTY": score_articles(market_news["BANKNIFTY"]),
     }
-    for symbol in fetcher.get_nifty50_symbols()[:15]:
-        out[symbol] = score_articles(fetch_news_for_topic(f"{symbol} NSE India stock", limit=5))
+    
+    symbols = fetcher.get_nifty50_symbols()[:15]
+    def fetch_news(sym: str):
+        return sym, score_articles(fetch_news_for_topic(f"{sym} NSE India stock", limit=5))
+        
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = executor.map(fetch_news, symbols)
+        for sym, articles in results:
+            out[sym] = articles
+            
     return out
 
 
 @app.get("/api/signals/top")
 @limiter.limit("30/minute")
-async def top_signals(request: Request) -> dict[str, Any]:
-    rows = [build_stock_payload(s, include_news=False) for s in fetcher.get_nifty50_symbols()]
+def top_signals(request: Request) -> dict[str, Any]:
+    symbols = fetcher.get_nifty50_symbols()
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        rows = list(executor.map(lambda s: build_stock_payload(s, include_news=False), symbols))
     buys = sorted([r for r in rows if "BUY" in r["signal"]], key=lambda x: x["confidence"], reverse=True)[:5]
     sells = sorted([r for r in rows if "SELL" in r["signal"]], key=lambda x: x["confidence"], reverse=True)[:5]
     return {"top_buy": buys, "top_sell": sells}
@@ -170,8 +217,11 @@ async def top_signals(request: Request) -> dict[str, Any]:
 
 @app.get("/api/banknifty")
 @limiter.limit("30/minute")
-async def banknifty_stocks(request: Request) -> list[dict[str, Any]]:
-    return [build_stock_payload(s, include_news=False) for s in fetcher.get_banknifty_symbols()]
+def banknifty_stocks(request: Request) -> list[dict[str, Any]]:
+    symbols = fetcher.get_banknifty_symbols()
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(lambda s: build_stock_payload(s, include_news=False), symbols))
+    return results
 
 
 @app.websocket("/ws/live")
@@ -186,3 +236,14 @@ async def ws_live(websocket: WebSocket) -> None:
             }
         )
         await asyncio.sleep(30)
+
+if __name__ == "__main__":
+    try:
+        import uvicorn
+        uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    except Exception as e:
+        import traceback
+        with open("startup_error.log", "w") as f:
+            f.write(traceback.format_exc())
+        raise
+
