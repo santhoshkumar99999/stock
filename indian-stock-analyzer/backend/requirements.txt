@@ -13,3 +13,4 @@ slowapi
 websockets
 mcp
 firebase-admin
+supabase

@@ -24,6 +24,7 @@ from scheduler import start_scheduler
 from sentiment import score_articles
 from signals import generate_signal
 from zapier_webhook import send_alert
+import supabase_db
 
 load_dotenv()
 IST = ZoneInfo("Asia/Kolkata")
@@ -100,9 +101,12 @@ def refresh_all() -> None:
         results = executor.map(process_symbol, symbols)
         for symbol, stock, now_signal in results:
             prev = last_signals.get(symbol)
+            # Persist latest signal to Supabase
+            supabase_db.upsert_signal(symbol, stock)
             # Trigger on state change to any BUY or SELL (including STRONG variants)
             if prev != now_signal and any(s in now_signal for s in ["BUY", "SELL"]) and "HOLD" not in now_signal:
                 send_alert(symbol, now_signal, stock.get("price") or 0.0, stock["confidence"], stock["reasons"])
+                supabase_db.log_alert(symbol, now_signal, stock.get("price") or 0.0, stock["confidence"])
             last_signals[symbol] = now_signal
 
 
@@ -236,6 +240,57 @@ async def ws_live(websocket: WebSocket) -> None:
             }
         )
         await asyncio.sleep(30)
+
+
+# ── Supabase-backed DB endpoints ─────────────────────────────────────────────
+
+@app.get("/api/db/signals")
+@limiter.limit("30/minute")
+def db_get_signals(request: Request, limit: int = 50) -> list[dict[str, Any]]:
+    """Return persisted signals from Supabase (most recent first)."""
+    return supabase_db.get_latest_signals(limit=limit)
+
+
+@app.get("/api/db/signals/{symbol}")
+@limiter.limit("60/minute")
+def db_get_signal_symbol(request: Request, symbol: str) -> dict[str, Any]:
+    """Return latest persisted signal for a specific symbol."""
+    row = supabase_db.get_signal_for_symbol(symbol.upper())
+    return row if row else {"error": "No signal found for symbol"}
+
+
+@app.get("/api/db/alerts")
+@limiter.limit("30/minute")
+def db_get_alerts(request: Request, limit: int = 100) -> list[dict[str, Any]]:
+    """Return alert history log from Supabase."""
+    return supabase_db.get_alert_history(limit=limit)
+
+
+@app.get("/api/db/watchlist")
+@limiter.limit("30/minute")
+def db_get_watchlist(request: Request) -> list[str]:
+    """Return the watchlist symbols from Supabase."""
+    return supabase_db.get_watchlist()
+
+
+class WatchlistRequest(BaseModel):
+    symbol: str
+
+
+@app.post("/api/db/watchlist")
+@limiter.limit("30/minute")
+def db_add_watchlist(request: Request, req: WatchlistRequest) -> dict[str, Any]:
+    """Add a symbol to the Supabase watchlist."""
+    ok = supabase_db.add_to_watchlist(req.symbol)
+    return {"status": "added" if ok else "error", "symbol": req.symbol.upper()}
+
+
+@app.delete("/api/db/watchlist/{symbol}")
+@limiter.limit("30/minute")
+def db_remove_watchlist(request: Request, symbol: str) -> dict[str, Any]:
+    """Remove a symbol from the Supabase watchlist."""
+    ok = supabase_db.remove_from_watchlist(symbol)
+    return {"status": "removed" if ok else "error", "symbol": symbol.upper()}
 
 if __name__ == "__main__":
     try:
